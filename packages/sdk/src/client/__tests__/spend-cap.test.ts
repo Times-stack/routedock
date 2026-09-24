@@ -17,7 +17,7 @@ import assert from 'node:assert/strict'
 import { Keypair } from '@stellar/stellar-sdk'
 import { RouteDockClient, usdcToMicros } from '../RouteDockClient.js'
 import { InMemorySpendStore, FileSpendStore } from '../../store/SpendStore.js'
-import { RouteDockPolicyRejectError } from '../../errors.js'
+import { RouteDockPolicyRejectError, RouteDockManifestError } from '../../errors.js'
 import { signManifest } from '../../manifest/sign.js'
 import type { RouteDockManifest, PaymentResult } from '../../types.js'
 import { join } from 'node:path'
@@ -515,6 +515,113 @@ function fakeResult(mode: string, amount: string): PaymentResult {
       rmSync(tmpPath)
     } catch {}
   }
+}
+
+// ── Test 10: endpointCaps keys are normalized to origin (Issue #414) ──────────
+
+{
+  const { manifest } = makeManifest()
+  const server = await startTestServer(makeManifestHandler(manifest))
+
+  try {
+    // A trailing slash, uppercase host, and an explicit default port must all
+    // normalize to the same origin the runtime lookup uses (new URL(url).origin),
+    // so the cap configured under any of these forms is still enforced.
+    const parsed = new URL(server.url)
+    const trailingSlashKey = `${server.url}/`
+    const uppercaseHostKey = `${parsed.protocol}//${parsed.host.toUpperCase()}`
+
+    for (const key of [trailingSlashKey, uppercaseHostKey]) {
+      const store = new InMemorySpendStore({ warn: false })
+      const client = new RouteDockClient({
+        wallet: Keypair.random(),
+        network: 'testnet',
+        spendCap: {
+          daily: '1.00',
+          asset: 'USDC',
+          endpointCaps: { [key]: '0.0015' },
+        },
+        spendStore: store,
+      })
+      stubTrustlineCache(client)
+      ;(client as any).charge.pay = async () => fakeResult('mpp-charge', '0.0008')
+
+      await client.pay(`${server.url}/test`)
+
+      let threw = false
+      try {
+        await client.pay(`${server.url}/test`)
+      } catch (err) {
+        threw = true
+        assert.ok(err instanceof RouteDockPolicyRejectError)
+        assert.equal((err as RouteDockPolicyRejectError).reason, 'local_endpoint_cap_exceeded')
+      }
+      assert.ok(threw, `endpoint cap keyed "${key}" should still be enforced against ${server.url}`)
+    }
+
+    console.log('✓ Test 10: endpointCaps keys normalize to origin (trailing slash, uppercase host)')
+  } finally {
+    await server.close()
+  }
+}
+
+// ── Test 11: invalid endpointCaps keys throw at construction ─────────────────
+
+{
+  const invalidUrlThrew = (() => {
+    try {
+      new RouteDockClient({
+        wallet: Keypair.random(),
+        network: 'testnet',
+        spendCap: { daily: '1.00', asset: 'USDC', endpointCaps: { 'not a url': '0.10' } },
+      })
+      return false
+    } catch (err) {
+      return err instanceof RouteDockManifestError && (err as Error).message.includes('not a url')
+    }
+  })()
+  assert.ok(invalidUrlThrew, 'an unparseable endpointCaps key should throw a typed error naming the key')
+
+  const pathThrew = (() => {
+    try {
+      new RouteDockClient({
+        wallet: Keypair.random(),
+        network: 'testnet',
+        spendCap: {
+          daily: '1.00',
+          asset: 'USDC',
+          endpointCaps: { 'https://api.example.com/price': '0.10' },
+        },
+      })
+      return false
+    } catch (err) {
+      return err instanceof RouteDockManifestError
+    }
+  })()
+  assert.ok(pathThrew, 'an endpointCaps key with a path should throw')
+
+  const duplicateThrew = (() => {
+    try {
+      new RouteDockClient({
+        wallet: Keypair.random(),
+        network: 'testnet',
+        spendCap: {
+          daily: '1.00',
+          asset: 'USDC',
+          endpointCaps: {
+            'https://api.example.com': '0.10',
+            'https://API.example.com/': '0.20',
+          },
+        },
+      })
+      return false
+    } catch (err) {
+      return err instanceof RouteDockManifestError
+    }
+  })()
+  assert.ok(duplicateThrew, 'two endpointCaps keys normalizing to the same origin should throw')
+
+  console.log('✓ Test 11: invalid or ambiguous endpointCaps keys throw a typed config error')
 }
 
 console.log('\nAll spend-cap tests passed.')
