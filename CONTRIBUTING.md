@@ -4,11 +4,11 @@ RouteDock moves real money on Stellar. The bar for a change is that it is verifi
 
 ## Prerequisites
 
-| Tool | Version | Why |
-|---|---|---|
-| Node | **>= 22** | `wrangler` 4 refuses to run on Node 20, and both providers build through it |
-| pnpm | **9.15.9** | pinned in `packageManager` |
-| Rust | 1.94.1 | only for `contracts/` |
+| Tool | Version    | Why                                                                         |
+| ---- | ---------- | --------------------------------------------------------------------------- |
+| Node | **>= 22**  | `wrangler` 4 refuses to run on Node 20, and both providers build through it |
+| pnpm | **9.15.9** | pinned in `packageManager`                                                  |
+| Rust | 1.94.1     | only for `contracts/`                                                       |
 
 Node 20 is the single most common cause of a red build here. Check before anything else:
 
@@ -38,6 +38,9 @@ pnpm verify --fast   # build + typecheck only
 A **pre-push hook** runs `pnpm verify --fast` automatically. It is installed by
 `pnpm install` (via `prepare`, which sets `core.hooksPath`), so you get it
 without doing anything. Bypass with `git push --no-verify` when you need to.
+
+The hook is not installed when `CI` is set, and it also skips itself when it
+does run on GitHub Actions, since the CI workflow already runs the same checks.
 
 It runs on push rather than on every commit deliberately: the check has to build
 the SDK first, which is slow enough that a per-commit hook gets bypassed, and a
