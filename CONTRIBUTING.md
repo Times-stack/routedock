@@ -4,11 +4,11 @@ RouteDock moves real money on Stellar. The bar for a change is that it is verifi
 
 ## Prerequisites
 
-| Tool | Version    | Why                                                                         |
-| ---- | ---------- | --------------------------------------------------------------------------- |
-| Node | **>= 22**  | `wrangler` 4 refuses to run on Node 20, and both providers build through it |
-| pnpm | **9.15.9** | pinned in `packageManager`                                                  |
-| Rust | 1.94.1     | only for `contracts/`                                                       |
+| Tool | Version | Why |
+|---|---|---|
+| Node | **>= 22** | `wrangler` 4 refuses to run on Node 20, and both providers build through it |
+| pnpm | **9.15.9** | pinned in `packageManager` |
+| Rust | 1.94.1 | only for `contracts/` |
 
 Node 20 is the single most common cause of a red build here. Check before anything else:
 
