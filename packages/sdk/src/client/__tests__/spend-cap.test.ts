@@ -524,42 +524,62 @@ function fakeResult(mode: string, amount: string): PaymentResult {
   const server = await startTestServer(makeManifestHandler(manifest))
 
   try {
-    // A trailing slash, uppercase host, and an explicit default port must all
-    // normalize to the same origin the runtime lookup uses (new URL(url).origin),
-    // so the cap configured under any of these forms is still enforced.
-    const parsed = new URL(server.url)
+    // A trailing slash must normalize to the same origin the runtime lookup
+    // uses (new URL(url).origin), so the cap configured under that form is
+    // still enforced end-to-end against a real request.
     const trailingSlashKey = `${server.url}/`
-    const uppercaseHostKey = `${parsed.protocol}//${parsed.host.toUpperCase()}`
 
-    for (const key of [trailingSlashKey, uppercaseHostKey]) {
-      const store = new InMemorySpendStore({ warn: false })
-      const client = new RouteDockClient({
-        wallet: Keypair.random(),
-        network: 'testnet',
-        spendCap: {
-          daily: '1.00',
-          asset: 'USDC',
-          endpointCaps: { [key]: '0.0015' },
-        },
-        spendStore: store,
-      })
-      stubTrustlineCache(client)
-      ;(client as any).charge.pay = async () => fakeResult('mpp-charge', '0.0008')
+    const store = new InMemorySpendStore({ warn: false })
+    const client = new RouteDockClient({
+      wallet: Keypair.random(),
+      network: 'testnet',
+      spendCap: {
+        daily: '1.00',
+        asset: 'USDC',
+        endpointCaps: { [trailingSlashKey]: '0.0015' },
+      },
+      spendStore: store,
+    })
+    stubTrustlineCache(client)
+    ;(client as any).charge.pay = async () => fakeResult('mpp-charge', '0.0008')
 
+    await client.pay(`${server.url}/test`)
+
+    let threw = false
+    try {
       await client.pay(`${server.url}/test`)
+    } catch (err) {
+      threw = true
+      assert.ok(err instanceof RouteDockPolicyRejectError)
+      assert.equal((err as RouteDockPolicyRejectError).reason, 'local_endpoint_cap_exceeded')
+    }
+    assert.ok(threw, `endpoint cap keyed "${trailingSlashKey}" should still be enforced against ${server.url}`)
 
-      let threw = false
-      try {
-        await client.pay(`${server.url}/test`)
-      } catch (err) {
-        threw = true
-        assert.ok(err instanceof RouteDockPolicyRejectError)
-        assert.equal((err as RouteDockPolicyRejectError).reason, 'local_endpoint_cap_exceeded')
-      }
-      assert.ok(threw, `endpoint cap keyed "${key}" should still be enforced against ${server.url}`)
+    // An uppercase host and an explicit default port must normalize to the
+    // same origin as their canonical form. server.url is a bare IP:port, so
+    // uppercasing it proves nothing — instead, pair each variant against the
+    // canonical "https://api.example.com" key and confirm the constructor
+    // rejects the collision, which is only possible if the variant actually
+    // normalized to that origin.
+    for (const variant of ['https://API.example.com', 'https://api.example.com:443']) {
+      assert.throws(
+        () =>
+          new RouteDockClient({
+            wallet: Keypair.random(),
+            network: 'testnet',
+            spendCap: {
+              daily: '1.00',
+              asset: 'USDC',
+              endpointCaps: { 'https://api.example.com': '0.10', [variant]: '0.20' },
+            },
+          }),
+        (err: unknown) =>
+          err instanceof RouteDockManifestError && err.message.includes('"https://api.example.com"'),
+        `"${variant}" should normalize to the same origin as "https://api.example.com"`,
+      )
     }
 
-    console.log('✓ Test 10: endpointCaps keys normalize to origin (trailing slash, uppercase host)')
+    console.log('✓ Test 10: endpointCaps keys normalize to origin (trailing slash, uppercase host, default port)')
   } finally {
     await server.close()
   }

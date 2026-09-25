@@ -80,9 +80,7 @@ function normalizeEndpointCaps(
 /** Returns a copy of `spendCap` with `endpointCaps` keys normalized to their origin. */
 function normalizeSpendCap(spendCap: SpendCap): SpendCap {
   const endpointCaps = normalizeEndpointCaps(spendCap.endpointCaps)
-  return endpointCaps === undefined
-    ? { daily: spendCap.daily, asset: spendCap.asset }
-    : { daily: spendCap.daily, asset: spendCap.asset, endpointCaps }
+  return endpointCaps === undefined ? spendCap : { ...spendCap, endpointCaps }
 }
 
 export type VaultConfig = NulthVaultConfig
