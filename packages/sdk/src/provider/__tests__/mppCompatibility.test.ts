@@ -81,7 +81,7 @@ test('onVerifiedCredential calls commit with the credential once verify resolves
   let committedWith: unknown = null
   let commitCalls = 0
 
-  const method = onVerifiedCredential(succeedingMethod(receipt) as any, (cred) => {
+  const method = onVerifiedCredential(succeedingMethod(receipt), (cred) => {
     commitCalls++
     committedWith = cred
   })
@@ -98,7 +98,7 @@ test('onVerifiedCredential does not call commit when verify throws', async () =>
   let commitCalls = 0
 
   const method = onVerifiedCredential(
-    failingMethod('Commitment signature verification failed.') as any,
+    failingMethod('Commitment signature verification failed.'),
     () => { commitCalls++ },
   )
 

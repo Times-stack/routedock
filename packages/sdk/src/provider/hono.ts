@@ -459,8 +459,31 @@ function createMppSessionHandlerState(
     if (typeof maybeUnref.unref === 'function') maybeUnref.unref()
   }
 
+  // `record` lives only in this instance's memory. A Durable Object (or any
+  // other host that can evict and recreate this closure between requests)
+  // loses it even though `commit` persisted it to `innerStore` — so any path
+  // that reads `record` must first try to reload it from the store. Never
+  // overwrites an in-memory record that is already set.
+  async function loadPersistedRecord(): Promise<VerifiedVoucherRecord | null> {
+    if (record) return record
+    try {
+      const stored = (await innerStore.get(voucherRecordKey)) as
+        | { amount?: string; signature?: string; payer?: string | null }
+        | undefined
+      if (!stored || typeof stored.amount !== 'string' || typeof stored.signature !== 'string') {
+        return null
+      }
+      record = { amount: BigInt(stored.amount), signature: stored.signature, payer: stored.payer ?? null }
+    } catch {
+      // Corrupt or unreadable persisted record — proceed as though there is none.
+      return null
+    }
+    return record
+  }
+
   // Flag an open-but-unsettled session for the reconciler. Idempotent.
   async function flagOrphan(reason: 'connection-closed' | 'idle-timeout'): Promise<void> {
+    await loadPersistedRecord()
     if (!sessionOpened || settledCleanly) return
     sessionOpened = false
     abortListenerArmed = false
@@ -500,6 +523,7 @@ function createMppSessionHandlerState(
   // to run inside the store's `put`, before the caller knew verification had
   // actually succeeded.
   async function commit(credential: ChannelVerifyCredential): Promise<void> {
+    await loadPersistedRecord()
     const payload = credential.payload
     if (typeof payload?.amount !== 'string' || typeof payload.signature !== 'string') return
     let amount: bigint
@@ -568,6 +592,7 @@ function createMppSessionHandlerState(
     mppx,
 
     async handleDelete(c: DeleteContext): Promise<Response> {
+      await loadPersistedRecord()
       let body: { amount?: string; signature?: string } | undefined
       try {
         body = await c.req.json() as { amount?: string; signature?: string }

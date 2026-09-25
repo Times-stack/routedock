@@ -106,8 +106,6 @@ export function createMppSessionHandler(opts: MppSessionHandlerOptions): Request
   // Set once a session is settled via DELETE so teardown handlers don't
   // re-flag an already-closed session as orphaned.
   let settledCleanly = false
-  // Guards against registering more than one 'close' listener per session.
-  let closeListenerArmed = false
 
   function clearIdleTimer(): void {
     if (idleTimer) {
@@ -126,12 +124,34 @@ export function createMppSessionHandler(opts: MppSessionHandlerOptions): Request
     if (typeof idleTimer.unref === 'function') idleTimer.unref()
   }
 
+  // `record` lives only in this instance's memory. Any host that can evict
+  // and recreate this handler between requests loses it even though `commit`
+  // persisted it to `innerStore` — so any path that reads `record` must first
+  // try to reload it from the store. Never overwrites an in-memory record
+  // that is already set.
+  async function loadPersistedRecord(): Promise<VerifiedVoucherRecord | null> {
+    if (record) return record
+    try {
+      const stored = (await innerStore.get(voucherRecordKey)) as
+        | { amount?: string; signature?: string; payer?: string | null }
+        | undefined
+      if (!stored || typeof stored.amount !== 'string' || typeof stored.signature !== 'string') {
+        return null
+      }
+      record = { amount: BigInt(stored.amount), signature: stored.signature, payer: stored.payer ?? null }
+    } catch {
+      // Corrupt or unreadable persisted record — proceed as though there is none.
+      return null
+    }
+    return record
+  }
+
   // Flag an open-but-unsettled session for the reconciler. Idempotent: a
   // session that was cleanly settled or already flagged is left untouched.
   async function flagOrphan(reason: OrphanReason): Promise<void> {
+    await loadPersistedRecord()
     if (!sessionOpened || settledCleanly) return
     sessionOpened = false
-    closeListenerArmed = false
     clearIdleTimer()
 
     const cumulativeAmount = record ? (Number(record.amount) / 1e7).toFixed(7) : '0.0000000'
@@ -168,6 +188,7 @@ export function createMppSessionHandler(opts: MppSessionHandlerOptions): Request
   // to run inside the store's `put`, before the caller knew verification had
   // actually succeeded.
   async function commit(credential: ChannelVerifyCredential): Promise<void> {
+    await loadPersistedRecord()
     const payload = credential.payload
     if (typeof payload?.amount !== 'string' || typeof payload.signature !== 'string') return
     let amount: bigint
@@ -233,6 +254,7 @@ export function createMppSessionHandler(opts: MppSessionHandlerOptions): Request
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       if (req.method === 'DELETE') {
+        await loadPersistedRecord()
         const body = req.body as { amount?: string; signature?: string } | undefined
         const bodyAmount = body?.amount ? BigInt(body.amount) : 0n
         const recordAmount = record?.amount ?? 0n
@@ -325,7 +347,6 @@ export function createMppSessionHandler(opts: MppSessionHandlerOptions): Request
         voucherCount = 0
         record = null
         await innerStore.delete(voucherRecordKey)
-        closeListenerArmed = false
         clearIdleTimer()
         return
       }
@@ -356,12 +377,20 @@ export function createMppSessionHandler(opts: MppSessionHandlerOptions): Request
       // Payment verified. Detect connection teardown so a client crash mid-
       // session flags the channel for the reconciler instead of leaking
       // in-memory state and leaving the Supabase row stuck `open`.
-      if (!closeListenerArmed) {
-        closeListenerArmed = true
-        req.on('close', () => {
-          void flagOrphan('connection-closed')
-        })
-      }
+      //
+      // A session's vouchers each arrive as their own HTTP request — possibly
+      // each over its own connection, not necessarily a single one reused for
+      // the whole session — so a listener must be attached per request, not
+      // once per session. `req` is unique per request, so attaching a fresh
+      // listener here every time is safe (no risk of stacking duplicates on
+      // the same object). Node fires 'close' on `req` after every completed
+      // request-response cycle, not only when the client disconnects before a
+      // response is sent, so `res.writableEnded` distinguishes a normal
+      // completion (skip) from a genuine mid-request drop (flag it).
+      req.on('close', () => {
+        if (res.writableEnded) return
+        void flagOrphan('connection-closed')
+      })
 
       next()
     } catch (err) {
